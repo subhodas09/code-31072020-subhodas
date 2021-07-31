@@ -1,0 +1,148 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Lambda Function with SNS,SQS and S3
+Parameters:
+  s3BucketName:
+    Description: Name of the SNS topic
+    Type: String
+    Default: subhodas09
+
+  snsName:
+    Description: Name of the SNS topic
+    Type: String
+    Default: MySNS
+
+  sqsName:
+    Description: Name of the SQS
+    Type: String
+    Default: MySQS   
+
+Resources:
+  s3Bucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Ref s3BucketName
+      VersioningConfiguration: 
+        Status: Enabled      
+      LifecycleConfiguration:
+        Rules:
+          - Id: bucket-lifecycle-policy
+            Prefix: ''
+            Status: Enabled
+            Transitions:
+              - TransitionInDays: 30
+                StorageClass: STANDARD_IA
+              - TransitionInDays: 90
+                StorageClass: GLACIER
+            ExpirationInDays: 180
+
+  snsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: 
+        Ref: snsName
+
+  snssubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn:
+        Ref: snsTopic
+      Protocol: sqs
+      Endpoint: 
+        Fn::GetAtt:
+          - sqsQueue
+          - Arn
+      RawMessageDelivery: true
+
+  sqsQueue:
+    Type: AWS::SQS::Queue
+
+  sqsQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - Ref: sqsQueue
+      PolicyDocument: 
+        Statement:
+            Effect: Allow
+            Principal: "*"
+            Action: 
+              - "SQS:*"
+            Resource: "*"
+
+  MyFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+              - Effect: Allow
+                Principal:
+                  Service: lambda.amazonaws.com
+                Action: sts:AssumeRole
+
+  LambdaPolicy:
+    Type: 'AWS::IAM::Policy'
+    Properties:
+      PolicyName: LambdaPolicy
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: 
+              - 's3:*'
+              - 'SQS:*'
+              - 'cloudwatch:*'
+              - 'logs:*'
+            Resource: '*'
+      Roles:
+        - !Ref MyFunctionRole   
+        
+  lambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Lambda function
+      FunctionName: test
+      Handler: index.lambda_handler
+      MemorySize: 128
+      Role:
+        Fn::GetAtt:
+          - MyFunctionRole
+          - Arn      
+      Runtime: python3.6
+      Code:
+        ZipFile: !Sub |
+            import boto3
+            s3 = boto3.resource('s3')
+            def lambda_handler(event, context):
+                for record in event['Records']:
+                    print("test")
+                    payload = record["body"]
+                    print(str(payload))
+                    content=str(payload)
+                    s3.Object( '${s3BucketName}', 'newfile.txt').put(Body=content)
+
+  MyEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties: 
+      BatchSize: 1
+      Enabled: true
+      EventSourceArn:
+        Fn::GetAtt:
+          - sqsQueue
+          - Arn    
+      FunctionName:
+        Fn::GetAtt:
+          - "lambdaFunction"
+          - "Arn"
+    DependsOn:
+      - sqsQueue
+      - snsTopic
+      - LambdaPolicy
+      - MyFunctionRole
+      - lambdaFunction          
+
+
+Outputs:
+  BucketName:
+    Value: !Ref s3Bucket
+    Description: Name of the sample Amazon S3 bucket with a lifecycle configuration                     
